@@ -1,0 +1,152 @@
+const express = require("express");
+const cors = require("cors");
+const bodyParser = require("body-parser");
+const nodemailer = require("nodemailer");
+const crypto = require("crypto");
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+// Middleware
+app.use(cors());
+app.use(bodyParser.json());
+
+// Mock Database
+let users = [];
+let referrals = {};
+
+// Function to generate referral link
+function generateReferralLink(userId) {
+  return `https://your-deployment-url.com/register?ref=${userId}`; // Replace with your deployment URL
+}
+
+// Nodemailer configuration for email notifications
+const transporter = nodemailer.createTransport({
+  service: "gmail",
+  auth: {
+    user: process.env.EMAIL, // Ensure this environment variable is set in your hosting platform
+    pass: process.env.APP_PASSWORD, // Ensure this environment variable is set in your hosting platform
+  },
+});
+
+// Routes
+app.post("/register", (req, res) => {
+  const { name, email, country, city, password, referrer } = req.body;
+
+  if (!name || !email || !country || !city || !password) {
+    return res.status(400).json({ message: "All fields are required." });
+  }
+
+  // Prevent duplicate emails
+  const existingUser = users.find((user) => user.email === email);
+  if (existingUser) {
+    return res.status(409).json({ message: "User with this email already exists." });
+  }
+
+  const userId = crypto.randomBytes(8).toString("hex");
+  const referralLink = generateReferralLink(userId);
+
+  const newUser = {
+    id: userId,
+    name,
+    email,
+    country,
+    city,
+    password,
+    balance: 0,
+    referralLink,
+    referrer,
+  };
+
+  users.push(newUser);
+
+  if (referrer && referrals[referrer]) {
+    referrals[referrer].push(userId);
+  } else if (referrer) {
+    referrals[referrer] = [userId];
+  }
+
+  transporter.sendMail(
+    {
+      from: process.env.EMAIL,
+      to: process.env.EMAIL,
+      subject: "New User Registration",
+      text: `A new user has registered:\n\nName: ${name}\nEmail: ${email}\nCountry: ${country}\nCity: ${city}\nReferral: ${referrer || "None"}`,
+    },
+    (error) => {
+      if (error) {
+        console.error("Error sending email:", error);
+        return res.status(500).json({ message: "Error sending email." });
+      }
+    }
+  );
+
+  res.json({ message: "Registration successful!", referralLink });
+});
+
+app.post("/login", (req, res) => {
+  const { email, password } = req.body;
+
+  const user = users.find((u) => u.email === email && u.password === password);
+  if (!user) {
+    return res.status(401).json({ message: "Invalid credentials." });
+  }
+
+  res.json({ message: "Login successful!", user });
+});
+
+// Automatic daily update for balance and referral earnings
+setInterval(() => {
+  users.forEach((user) => {
+    const earned = user.balance * 0.1; // 10% daily increase
+    user.balance += earned;
+
+    if (referrals[user.id]) {
+      referrals[user.id].forEach((refId) => {
+        const refUser = users.find((u) => u.id === refId);
+        if (refUser) {
+          refUser.balance += earned * 0.1; // 10% bonus for referrals
+        }
+      });
+    }
+  });
+
+  console.log("Balances updated.");
+}, 24 * 60 * 60 * 1000); // Run every 24 hours
+
+app.post("/withdraw", (req, res) => {
+  const { userId, amount } = req.body;
+
+  const user = users.find((u) => u.id === userId);
+  if (!user) {
+    return res.status(404).json({ message: "User not found." });
+  }
+
+  if (amount > user.balance) {
+    return res.status(400).json({ message: "Insufficient balance." });
+  }
+
+  user.balance -= amount;
+  res.json({ message: "Withdrawal successful!", balance: user.balance });
+});
+
+app.get("/dashboard", (req, res) => {
+  const { userId } = req.query;
+
+  const user = users.find((u) => u.id === userId);
+  if (!user) {
+    return res.status(404).json({ message: "User not found." });
+  }
+
+  res.json({
+    name: user.name,
+    email: user.email,
+    balance: user.balance,
+    referralLink: user.referralLink,
+  });
+});
+
+// Start the server
+app.listen(PORT, () => {
+  console.log(`Server is running on port ${PORT}`);
+})
